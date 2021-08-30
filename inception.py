@@ -28,12 +28,14 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch', dest='batch_size', action='store', help='batch size', type=int, required=True)
 parser.add_argument('--lr', dest='initial_lr', action='store', help='learning rate', type=float, required=True)
+parser.add_argument('--from_scratch', dest='from_scratch', help='train from scratch',action='store_true', default=False)
 
 args = parser.parse_args()
 batch_size = args.batch_size
 initial_lr = args.initial_lr
+from_scratch = args.from_scratch
 
-data_dir = '/u/hannesh/ecoset'
+data_dir = '/ptmp/pierocor/datasets/ecoset'
 working_dir = os.getcwd()
 
 best_acc1 = 0
@@ -43,13 +45,13 @@ hvd.init()
 # Logging
 #writer = SummaryWriter('%s/runs/' % working_dir)
 if hvd.rank() == 0:
-    logging.basicConfig(filename='%s/train.log' % working_dir, level=logging.INFO)
+    logging.basicConfig(filename='%s/train_bs%d_lr%2.1e.log' % (working_dir, batch_size, initial_lr), level=logging.INFO)
 
 num_classes = 565
 
-def create_model():
+def create_model(pretrained=False):
     logging.info('create model')
-    model = models.inception_v3(pretrained=False, num_classes=num_classes)
+    model = models.inception_v3(pretrained=pretrained)
     num_ftrs = model.AuxLogits.fc.in_features
     model.AuxLogits.fc = nn.Linear(num_ftrs, num_classes)
     num_ftrs = model.fc.in_features
@@ -118,10 +120,11 @@ def train(train_loader, model, criterion, optimizer, epoch):
     log_after_epoch(losses, top1, top5, 'train', epoch, epoch_time)
 
 def run():
-    model = create_model()
+    model = create_model(pretrained= not from_scratch)
     epochs = 90
     start_epoch = 0
-    complete_batch_size = batch_size
+    local_batch_size = batch_size // hvd.size()
+    complete_batch_size = local_batch_size * hvd.size()
     logging.info('Use total batch size: %s' % str(complete_batch_size))
     lr = initial_lr # * hvd.size() ?
     print('Initial learning rate: %s' % str(lr))
@@ -181,17 +184,20 @@ def run():
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=complete_batch_size, sampler=train_sampler)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=local_batch_size, sampler=train_sampler)
 
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
+    val_dataset = datasets.ImageFolder(valdir,
+        transforms.Compose([
             transforms.Resize(299),
             transforms.CenterCrop(299),
             transforms.ToTensor(),
             normalize,
-        ])),
-        batch_size=complete_batch_size, shuffle=False,
-        num_workers=workers, pin_memory=True)
+        ]))
+    
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    val_loader = torch.utils.data.DataLoader(val_dataset,
+        batch_size=local_batch_size, shuffle=False,
+        num_workers=0, pin_memory=True)
 
     start_epoch = hvd.broadcast(torch.tensor(start_epoch), root_rank=0, name='start_epoch').item()
     hvd.broadcast_parameters(model.state_dict(), root_rank=0)
