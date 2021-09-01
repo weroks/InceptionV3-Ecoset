@@ -29,11 +29,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--batch', dest='batch_size', action='store', help='batch size', type=int, required=True)
 parser.add_argument('--lr', dest='initial_lr', action='store', help='learning rate', type=float, required=True)
 parser.add_argument('--from_scratch', dest='from_scratch', help='train from scratch',action='store_true', default=False)
+parser.add_argument('--resume', dest='resume', help='resume_checkpoint', type=str, default='')
 
 args = parser.parse_args()
 batch_size = args.batch_size
 initial_lr = args.initial_lr
 from_scratch = args.from_scratch
+suffix = '_bs%d_lr%2.1e' % (batch_size, initial_lr)
+if from_scratch: suffix+= '_fs'
 
 data_dir = '/ptmp/pierocor/datasets/ecoset'
 working_dir = os.getcwd()
@@ -45,12 +48,12 @@ hvd.init()
 # Logging
 #writer = SummaryWriter('%s/runs/' % working_dir)
 if hvd.rank() == 0:
-    logging.basicConfig(filename='%s/train_bs%d_lr%2.1e.log' % (working_dir, batch_size, initial_lr), level=logging.INFO)
+    logging.basicConfig(filename='%s/train%s.log' % (working_dir, suffix), level=logging.INFO)
 
 num_classes = 565
 
 def create_model(pretrained=False):
-    logging.info('create model')
+    logging.info('create model - pretrained: %s' % pretrained)
     model = models.inception_v3(pretrained=pretrained)
     num_ftrs = model.AuxLogits.fc.in_features
     model.AuxLogits.fc = nn.Linear(num_ftrs, num_classes)
@@ -63,7 +66,7 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         torch.save(state, filename)
         if is_best:
             shutil.copyfile('%s/%s' % (working_dir, filename),
-'model_best.pth.tar')
+'%s/model_best%s.pth.tar' % (working_dir, suffix))
 
 def log_after_epoch(losses, top1, top5, mode, epoch, time_needed=0):
     if hvd.rank() == 0:
@@ -129,7 +132,7 @@ def run():
     lr = initial_lr # * hvd.size() ?
     print('Initial learning rate: %s' % str(lr))
     lr_decay_rate = 0.94
-    resume = '%s/checkpoint.pth.tar' % working_dir
+    resume = '%s/checkpoint%s.pth.tar' % (working_dir, suffix)
     weight_decay = 0.9
     eps = 1.0
     momentum = 0.9

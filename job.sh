@@ -3,11 +3,11 @@
 
 #SBATCH -o out/ft.%j
 #SBATCH -e out/ft.%j
-#SBATCH -J inc_eco_ft.%j
+#SBATCH -J 1e-3_fs.%j
 
-#SBATCH -t 12:00:00
+#SBATCH -t 2:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks-per-node=4
 #SBATCH --constraint="gpu"
 #SBATCH --gres=gpu:a100:4
 #SBATCH --mem=0
@@ -21,4 +21,4 @@ module load pytorch/gpu-cuda-11.2/1.8.1
 module load gcc/10
 module load openmpi/4
 module load horovod-pytorch-1.8.1/gpu-cuda-11.2/0.21.0
-srun python ./inception.py --batch=128 --lr=0.0225
+srun python ./inception.py --batch=256 --lr=0.001 --from_scratch
