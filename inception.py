@@ -29,16 +29,18 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--batch', dest='batch_size', action='store', help='batch size', type=int, required=True)
 parser.add_argument('--lr', dest='initial_lr', action='store', help='learning rate', type=float, required=True)
 parser.add_argument('--from_scratch', dest='from_scratch', help='train from scratch',action='store_true', default=False)
+parser.add_argument('--fixed_feat', dest='fixed_feat', help='Fixed features extractor (transfer learning)',action='store_true', default=False)
 parser.add_argument('--resume', dest='resume', help='resume_checkpoint', type=str, default='')
 
 args = parser.parse_args()
 batch_size = args.batch_size
 initial_lr = args.initial_lr
 from_scratch = args.from_scratch
+fixed_feat = args.fixed_feat
 suffix = '_bs%d_lr%2.1e' % (batch_size, initial_lr)
 if from_scratch: suffix+= '_fs'
 
-data_dir = '/ptmp/pierocor/datasets/ecoset'
+data_dir = '/ptmp/pierocor/imagenet'
 working_dir = os.getcwd()
 
 best_acc1 = 0
@@ -52,9 +54,12 @@ if hvd.rank() == 0:
 
 num_classes = 565
 
-def create_model(pretrained=False):
+def create_model(pretrained=False, fixed_feature=False):
     logging.info('create model - pretrained: %s' % pretrained)
     model = models.inception_v3(pretrained=pretrained)
+    if fixed_feature:
+        for param in model.parameters():
+            param.requires_grad = False
     num_ftrs = model.AuxLogits.fc.in_features
     model.AuxLogits.fc = nn.Linear(num_ftrs, num_classes)
     num_ftrs = model.fc.in_features
@@ -123,7 +128,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
     log_after_epoch(losses, top1, top5, 'train', epoch, epoch_time)
 
 def run():
-    model = create_model(pretrained= not from_scratch)
+    model = create_model(pretrained= not from_scratch, fixed_feature=fixed_feat)
     epochs = 90
     start_epoch = 0
     local_batch_size = batch_size // hvd.size()
@@ -146,11 +151,18 @@ def run():
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.RMSprop(model.parameters(), lr, eps=eps,
+    params_to_update = []
+    for name,param in model.named_parameters():
+        if param.requires_grad == True:
+            params_to_update.append((name,param))
+    if hvd.rank() == 0:
+        logging.info("Model parameters to train: %d / %d" % (len(params_to_update), len(model.named_parameters())))
+
+    optimizer = torch.optim.RMSprop([param for _, param in params_to_update], lr, eps=eps,
                                 momentum=momentum,
                                 weight_decay=weight_decay)
 
-    optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
+    optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=params_to_update)
 
     lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lr_decay_rate)
 
@@ -187,7 +199,7 @@ def run():
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=local_batch_size, sampler=train_sampler)
+    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=4, batch_size=local_batch_size, sampler=train_sampler)
 
     val_dataset = datasets.ImageFolder(valdir,
         transforms.Compose([
@@ -200,7 +212,7 @@ def run():
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, num_replicas=hvd.size(), rank=hvd.rank())
     val_loader = torch.utils.data.DataLoader(val_dataset,
         batch_size=local_batch_size, shuffle=False,
-        num_workers=0, pin_memory=True)
+        num_workers=4, pin_memory=True)
 
     start_epoch = hvd.broadcast(torch.tensor(start_epoch), root_rank=0, name='start_epoch').item()
     hvd.broadcast_parameters(model.state_dict(), root_rank=0)

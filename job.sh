@@ -3,7 +3,7 @@
 
 #SBATCH -o out/ft.%j
 #SBATCH -e out/ft.%j
-#SBATCH -J 1e-3_fs.%j
+#SBATCH -J 1e-3_fe.%j
 
 #SBATCH -t 2:00:00
 #SBATCH --nodes=1
@@ -21,4 +21,4 @@ module load pytorch/gpu-cuda-11.2/1.8.1
 module load gcc/10
 module load openmpi/4
 module load horovod-pytorch-1.8.1/gpu-cuda-11.2/0.21.0
-srun python ./inception.py --batch=256 --lr=0.001 --from_scratch
+srun python ./inception.py --batch=256 --lr=0.001 --fixed_feat
