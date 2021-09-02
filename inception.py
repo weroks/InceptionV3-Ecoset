@@ -29,7 +29,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--batch', dest='batch_size', action='store', help='batch size', type=int, required=True)
 parser.add_argument('--lr', dest='initial_lr', action='store', help='learning rate', type=float, required=True)
 parser.add_argument('--from_scratch', dest='from_scratch', help='train from scratch',action='store_true', default=False)
-parser.add_argument('--fixed_feat', dest='fixed_feat', help='Fixed features extractor (transfer learning)',action='store_true', default=False)
+parser.add_argument('--fixed_feat', dest='fixed_feat', help='Fixed features extractor (transfer learning - override from_scratch)',action='store_true', default=False)
 parser.add_argument('--resume', dest='resume', help='resume_checkpoint', type=str, default='')
 
 args = parser.parse_args()
@@ -38,9 +38,14 @@ initial_lr = args.initial_lr
 from_scratch = args.from_scratch
 fixed_feat = args.fixed_feat
 suffix = '_bs%d_lr%2.1e' % (batch_size, initial_lr)
-if from_scratch: suffix+= '_fs'
+if fixed_feat:
+    from_scratch = False
+    suffix+= '_fe'
+elif from_scratch: suffix+= '_fs'
+else: suffix+= '_ft'
 
-data_dir = '/ptmp/pierocor/imagenet'
+# data_dir = '/ptmp/pierocor/datasets/ecoset/'
+data_dir = '/ptmp/pierocor/imagenet/'
 working_dir = os.getcwd()
 
 best_acc1 = 0
@@ -52,10 +57,11 @@ hvd.init()
 if hvd.rank() == 0:
     logging.basicConfig(filename='%s/train%s.log' % (working_dir, suffix), level=logging.INFO)
 
-num_classes = 565
+# num_classes = 565
+num_classes = 1000
 
 def create_model(pretrained=False, fixed_feature=False):
-    logging.info('create model - pretrained: %s' % pretrained)
+    logging.info('create model - pretrained: %s - fixed feature: %s' % (pretrained, fixed_feature))
     model = models.inception_v3(pretrained=pretrained)
     if fixed_feature:
         for param in model.parameters():
@@ -156,7 +162,7 @@ def run():
         if param.requires_grad == True:
             params_to_update.append((name,param))
     if hvd.rank() == 0:
-        logging.info("Model parameters to train: %d / %d" % (len(params_to_update), len(model.named_parameters())))
+        logging.info("Model parameters to train: %d / %d" % (len(params_to_update), len(list(model.named_parameters()))))
 
     optimizer = torch.optim.RMSprop([param for _, param in params_to_update], lr, eps=eps,
                                 momentum=momentum,
