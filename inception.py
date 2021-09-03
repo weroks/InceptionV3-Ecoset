@@ -30,22 +30,24 @@ parser.add_argument('--batch', dest='batch_size', action='store', help='batch si
 parser.add_argument('--lr', dest='initial_lr', action='store', help='learning rate', type=float, required=True)
 parser.add_argument('--from_scratch', dest='from_scratch', help='train from scratch',action='store_true', default=False)
 parser.add_argument('--fixed_feat', dest='fixed_feat', help='Fixed features extractor (transfer learning - override from_scratch)',action='store_true', default=False)
-parser.add_argument('--resume', dest='resume', help='resume_checkpoint', type=str, default='')
+parser.add_argument('--optim', dest='optim_name', help='Optimizer (SGD, RMSprop)', type=str, default='RMSprop')
 
 args = parser.parse_args()
 batch_size = args.batch_size
 initial_lr = args.initial_lr
 from_scratch = args.from_scratch
 fixed_feat = args.fixed_feat
+optim_name = args.optim_name
 suffix = '_bs%d_lr%2.1e' % (batch_size, initial_lr)
 if fixed_feat:
     from_scratch = False
     suffix+= '_fe'
 elif from_scratch: suffix+= '_fs'
 else: suffix+= '_ft'
+suffix += '_' + optim_name
 
-# data_dir = '/ptmp/pierocor/datasets/ecoset/'
-data_dir = '/ptmp/pierocor/imagenet/'
+data_dir = '/ptmp/pierocor/datasets/ecoset/'
+# data_dir = '/ptmp/pierocor/imagenet/'
 working_dir = os.getcwd()
 
 best_acc1 = 0
@@ -57,8 +59,8 @@ hvd.init()
 if hvd.rank() == 0:
     logging.basicConfig(filename='%s/train%s.log' % (working_dir, suffix), level=logging.INFO)
 
-# num_classes = 565
-num_classes = 1000
+num_classes = 565
+# num_classes = 1000
 
 def create_model(pretrained=False, fixed_feature=False):
     logging.info('create model - pretrained: %s - fixed feature: %s' % (pretrained, fixed_feature))
@@ -134,6 +136,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
     log_after_epoch(losses, top1, top5, 'train', epoch, epoch_time)
 
 def run():
+    if hvd.rank() == 0:
+        logging.info('Arguments: %s \n Horovod size: %d' % (args, hvd.size()))
     model = create_model(pretrained= not from_scratch, fixed_feature=fixed_feat)
     epochs = 90
     start_epoch = 0
@@ -141,11 +145,12 @@ def run():
     complete_batch_size = local_batch_size * hvd.size()
     logging.info('Use total batch size: %s' % str(complete_batch_size))
     lr = initial_lr # * hvd.size() ?
-    print('Initial learning rate: %s' % str(lr))
+    if hvd.rank() == 0:
+        logging.info('Initial learning rate: %s' % str(lr))
     lr_decay_rate = 0.94
     resume = '%s/checkpoint%s.pth.tar' % (working_dir, suffix)
     weight_decay = 0.9
-    eps = 1.0
+    eps = 1e-8
     momentum = 0.9
     data = data_dir
     workers = 0
@@ -163,10 +168,19 @@ def run():
             params_to_update.append((name,param))
     if hvd.rank() == 0:
         logging.info("Model parameters to train: %d / %d" % (len(params_to_update), len(list(model.named_parameters()))))
-
-    optimizer = torch.optim.RMSprop([param for _, param in params_to_update], lr, eps=eps,
-                                momentum=momentum,
-                                weight_decay=weight_decay)
+        logging.info("Setting %s optimizer.." % optim_name)
+    if optim_name == "RMSprop":
+        optimizer = torch.optim.RMSprop([param for _, param in params_to_update], lr, eps=eps,
+                                    momentum=momentum,
+                                    weight_decay=weight_decay)
+    elif optim_name == "SGD":
+        optimizer = torch.optim.SGD([param for _, param in params_to_update], lr, momentum=momentum)
+    else:
+        if hvd.rank() == 0:
+            logging.info("Not a valid optimizer")
+        exit(1)
+    if hvd.rank() == 0:
+        logging.info("%s" % optimizer) 
 
     optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=params_to_update)
 
@@ -186,7 +200,7 @@ def run():
         else:
             logging.info("=> no checkpoint found at '{}'".format(resume))
 
-
+    logging.info('Loading data from: %s' % (data_dir))
 
     # Data loading code
     traindir = os.path.join(data, 'train')
@@ -205,7 +219,7 @@ def run():
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=4, batch_size=local_batch_size, sampler=train_sampler)
+    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=4, batch_size=local_batch_size, sampler=train_sampler, pin_memory=True)
 
     val_dataset = datasets.ImageFolder(valdir,
         transforms.Compose([
@@ -215,7 +229,7 @@ def run():
             normalize,
         ]))
     
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    # val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, num_replicas=hvd.size(), rank=hvd.rank())
     val_loader = torch.utils.data.DataLoader(val_dataset,
         batch_size=local_batch_size, shuffle=False,
         num_workers=4, pin_memory=True)

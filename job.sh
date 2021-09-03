@@ -1,15 +1,15 @@
 #!/bin/bash -l
 #SBATCH -D ./
 
-#SBATCH -o out/imagenet.%j
-#SBATCH -e out/imagenet.%j
-#SBATCH -J imagenet.%j
+#SBATCH -o out/fe_RMSprop.%j
+#SBATCH -e out/fe_RMSprop.%j
+#SBATCH -J fe_RMSprop
 
 #SBATCH -t 2:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
 #SBATCH --constraint="gpu"
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:a100:1
 #SBATCH --mem=0
 #SBATCH --cpus-per-task=18
 
@@ -21,4 +21,4 @@ module load pytorch/gpu-cuda-11.2/1.8.1
 module load gcc/10
 module load openmpi/4
 module load horovod-pytorch-1.8.1/gpu-cuda-11.2/0.21.0
-srun python ./inception.py --batch=256 --lr=0.002
+srun python ./inception.py --batch=256 --lr=0.01 --fixed_feat --optim RMSprop
